@@ -18,6 +18,7 @@ from flow.envs.loop.loop_accel import ADDITIONAL_ENV_PARAMS as LOOP_ENV_PARAMS
 from flow.scenarios.loop import LoopScenario
 from flow.scenarios.loop import ADDITIONAL_NET_PARAMS as LOOP_NET_PARAMS
 from flow.scenarios.grid import SimpleGridScenario
+import numpy as np
 
 
 def merge_env(inflow_rate, cf_params, num, render=None):
@@ -37,7 +38,7 @@ def merge_env(inflow_rate, cf_params, num, render=None):
     """
     sim_params = SumoParams(
         render=False,
-        sim_step=0.2,
+        sim_step=0.1,
         restart_instance=True)
 
     if render is not None:
@@ -48,14 +49,14 @@ def merge_env(inflow_rate, cf_params, num, render=None):
         veh_id="human",
         acceleration_controller=(IDMController, cf_params),
         car_following_params=SumoCarFollowingParams(
-            speed_mode=9,
+            accel=4.5,
+            decel=4.5,
+            speed_mode='all_checks',
         ),
         num_vehicles=5)
 
     env_params = EnvParams(
-        additional_params=MERGE_ENV_PARAMS,
-        sims_per_step=5,
-        warmup_steps=0)
+        additional_params=MERGE_ENV_PARAMS)
 
     inflow = InFlows()
     inflow.add(
@@ -74,7 +75,7 @@ def merge_env(inflow_rate, cf_params, num, render=None):
     additional_net_params = MERGE_NET_PARAMS.copy()
     additional_net_params["merge_lanes"] = 1
     additional_net_params["highway_lanes"] = 1
-    additional_net_params["pre_merge_length"] = 1000
+    additional_net_params["pre_merge_length"] = 500
     net_params = NetParams(
         inflows=inflow,
         no_internal_links=False,
@@ -106,7 +107,10 @@ def ring_env(length, cf_params, num, render=None):
         A non-rl experiment demonstrating the performance of human-driven
         vehicles on a ring road.
     """
-    sim_params = SumoParams(sim_step=0.1, render=False)
+    sim_params = SumoParams(
+        sim_step=0.1,
+        render=False,
+        restart_instance=True)
 
     if render is not None:
         sim_params.render = render
@@ -115,6 +119,11 @@ def ring_env(length, cf_params, num, render=None):
     vehicles.add(
         veh_id="idm",
         acceleration_controller=(IDMController, cf_params),
+        car_following_params=SumoCarFollowingParams(
+            accel=4.5,
+            decel=4.5,
+            speed_mode='all_checks',
+        ),
         routing_controller=(ContinuousRouter, {}),
         num_vehicles=22)
 
@@ -161,6 +170,7 @@ def grid_env(inflow_rate, cf_params, num, render=None):
     num_cars_bot = 2
     tot_cars = (num_cars_left + num_cars_right) * N_COLUMNS \
         + (num_cars_top + num_cars_bot) * N_ROWS
+    inflow_ratio = np.random.dirichlet(np.ones(4), size=1)[0, :]
 
     grid_array = {
         "short_length": short_length,
@@ -176,7 +186,7 @@ def grid_env(inflow_rate, cf_params, num, render=None):
 
     sim_params = SumoParams(
         restart_instance=True,
-        sim_step=0.5,
+        sim_step=0.1,
         render=False)
 
     if render is not None:
@@ -189,8 +199,9 @@ def grid_env(inflow_rate, cf_params, num, render=None):
         routing_controller=(GridRouter, {}),
         car_following_params=SumoCarFollowingParams(
             min_gap=2.5,
+            accel=4.5,
             decel=10.5,  # avoid collisions at emergency stops
-            speed_mode=9,
+            speed_mode='all_checks',
         ),
         num_vehicles=tot_cars)
 
@@ -202,27 +213,27 @@ def grid_env(inflow_rate, cf_params, num, render=None):
     inflow.add(
         veh_type="human",
         edge="bot0_0",
-        vehs_per_hour=inflow_rate/4,
+        vehs_per_hour=inflow_rate * inflow_ratio[0],
         departLane="free",
-        departSpeed=10)
+        departSpeed=5)
     inflow.add(
         veh_type="human",
         edge="right0_0",
-        vehs_per_hour=inflow_rate/4,
+        vehs_per_hour=inflow_rate * inflow_ratio[1],
         departLane="free",
-        departSpeed=10)
+        departSpeed=5)
     inflow.add(
         veh_type="human",
         edge="top0_1",
-        vehs_per_hour=inflow_rate/4,
+        vehs_per_hour=inflow_rate * inflow_ratio[2],
         departLane="free",
-        departSpeed=10)
+        departSpeed=5)
     inflow.add(
         veh_type="human",
         edge="left1_0",
-        vehs_per_hour=inflow_rate/4,
+        vehs_per_hour=inflow_rate * inflow_ratio[3],
         departLane="free",
-        departSpeed=10)
+        departSpeed=5)
 
     additional_net_params = {
         "grid_array": grid_array,
@@ -243,7 +254,6 @@ def grid_env(inflow_rate, cf_params, num, render=None):
         vehicles=vehicles,
         net_params=net_params,
         initial_config=initial_config,
-        # traffic_lights=tl_logic
     )
 
     return AccelEnv(env_params, sim_params, scenario)

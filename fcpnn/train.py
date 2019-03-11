@@ -1,19 +1,19 @@
 """
 
 """
-from model import NN, PNN, FCPNN
+from model import NN  # , PNN, FCPNN
 import numpy as np
 import tensorflow as tf
 from collections import defaultdict
 import random
 import os
 import errno
-import csv
+import pandas as pd
 
 # number of layers in the neural network model
 LAYERS = [1, 2, 3, 4]
 # number of nodes in each hidden layer
-NODES = [32, 128]
+NODES = [64, 256]
 # learning rate for the Adam Optimizer (performed on a log scale)
 LEARNING_RATES = [-3, -1]
 # number of hyper-parameter tuning trails
@@ -23,7 +23,12 @@ N_SEEDS = 5
 # number of input features
 N_INPUTS = 4
 # number of training iterations
-N_ITER = 2000
+N_ITER = 1000
+# SGD batch size
+BATCH_SIZE = 512
+# number of SGD steps between computing the mean square error loss and updating
+# the checkpoint
+SAVE_STEPS = 5
 
 
 def ensure_dir(path):
@@ -49,14 +54,20 @@ def train_model(model, dataset, fd):
     fd : str
         file directory where the results should be saved
     """
+    # perform N_ITER SGD steps and collect the mse for each step
     res = []
     for itr in range(N_ITER):
-        loss = train_step(model, dataset, dataset, fd, itr)
-        res.append(loss)
+        loss = train_step(model, dataset, fd, itr)
+        if loss is not None:
+            res.append(loss)
+
+    # terminate the model
+    model.close()
+
     return res
 
 
-def train_step(model, train_set, test_set, fd, itr):
+def train_step(model, samples, fd, itr):
     """Perform a single step of training.
 
     This includes: updating the weights, saving the new model as a checkpoint,
@@ -66,10 +77,8 @@ def train_step(model, train_set, test_set, fd, itr):
     ----------
     model : Model
         the neural network model used for regression
-    train_set : array_like
+    samples : array_like
         training dataset, where the last column is the actual output values
-    test_set : array_like
-        testing dataset, where the last column is the actual output values
     fd : str
         file directory for saving checkpoint
     itr : int
@@ -82,85 +91,95 @@ def train_step(model, train_set, test_set, fd, itr):
     float
         loss standard deviation
     """
-    loss = model.train(train_set)
-    # model.save(fd, itr)
+    # perform an SGD step within the model
+    model.train(samples)
 
-    print("Iter {} Return: {}, {}".format(itr, np.mean(loss), np.std(loss)))
+    # save every the checkpoint every 5th training iteration
+    loss = None
+    if itr % SAVE_STEPS == 0:
+        loss = model.compute_mse()
+        model.save(fd, itr)
+        print("Iter {} Return: {}".format(itr, loss))
+
     return loss
 
 
 if __name__ == '__main__':
-    file = '../data_collection/data/ring-0.csv'
-    columns = []
-    with open(file, 'rU') as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if columns:
-                for i, value in enumerate(row):
-                    columns[i].append(value)
-            else:
-                columns = [[value] for value in row]
-
-    # you now have a column-major 2D array of your file.
-    as_dict = {c[0]: c[1:] for c in columns}
+    # import the individual datasets
+    dataset = []
+    for i in range(3):
+        dataset.append(pd.read_csv('../traffic_autocalibration/data_collection'
+                                   '/data/ring-{}.csv'.format(i)))
+    dataset = pd.concat(dataset)
 
     # the final dataset
-    dataset = np.asarray([[float(x) for x in as_dict['headway']],
-                          [float(x) for x in as_dict['speed']],
-                          [float(x) for x in as_dict['prev_accel']],
-                          [float(x) for x in as_dict['lead_speed']],
-                          [float(x) for x in as_dict['accel']]]).T
-    dataset = dataset[100:, :]
+    dataset = np.asarray([dataset['headway'],
+                          dataset['speed'],
+                          dataset['prev_accel'],
+                          dataset['lead_speed'],
+                          dataset['accel']]).T
+    np.random.shuffle(dataset)
+
+    # train and test samples
+    test_samples = dataset[:int(dataset.shape[0]/4), :]
+    train_samples = dataset[int(dataset.shape[0]/4):, :]
 
     # hyper-parameter search
     for _ in range(N_TRIALS):
         # extract a list of hyper-parameters
         layer = random.choice(LAYERS)
-        node = int(random.uniform(NODES[0], NODES[1]))
+        node = random.randint(NODES[0], NODES[1])
         lr = 10 ** random.uniform(LEARNING_RATES[0], LEARNING_RATES[1])
 
-        # create the necessary directories to store the results and meta-data
-        ensure_dir('nn')
-        ensure_dir('nn_d')
-        ensure_dir('nn_bn')
-
-        # training for BLANK different seeds
+        # training for N_SEEDS different seeds
         loss_data = defaultdict(list)
         for i in range(N_SEEDS):
-            # training on a generic neural network model
-            model = NN(inputs=N_INPUTS,
-                       hidden_size=[node for _ in range(layer)],
-                       act_funcs=[tf.nn.relu for _ in range(layer)],
-                       batch_size=128,
-                       learning_rate=lr,
-                       dropout=False,
-                       batch_norm=False)
+            # create the necessary directories to store the results and meta-
+            # data
+            # ensure_dir('nn/{}l_{}n_{}lr/{}'.format(layer, node, lr, i))
+            # ensure_dir('nn_d/{}l_{}n_{}lr/{}'.format(layer, node, lr, i))
+            ensure_dir('nn_bn/{}l_{}n_{}lr/{}'.format(layer, node, lr, i))
 
-            fd = 'nn/{}_{}_{}'.format(layer, node, lr, i)
-            losses = train_model(model, dataset, fd)
-            loss_data[fd].append(losses)
+            # # training on a generic neural network model
+            # model = NN(inputs=N_INPUTS,
+            #            hidden_size=[node for _ in range(layer)],
+            #            act_funcs=[tf.nn.leaky_relu for _ in range(layer)],
+            #            batch_size=BATCH_SIZE,
+            #            learning_rate=lr,
+            #            test_samples=test_samples,
+            #            dropout=False,
+            #            batch_norm=False)
+            #
+            # fd = 'nn/{}l_{}n_{}lr/{}'.format(layer, node, lr, i)
+            # losses = train_model(model, train_samples, fd)
+            # loss_data[fd].append(losses)
 
-            # training on a generic neural network model with dropout
-            model = NN(inputs=N_INPUTS,
-                       hidden_size=[n for _ in range(l)],
-                       act_funcs=tf.nn.relu,
-                       dropout=True,
-                       batch_norm=False)
-
-            fd = 'nn_d/{}_{}_{}'.format(layer, node, lr, i)
-            losses = train_model(model, dataset, fd)
-            loss_data[fd].append(losses)
+            # # training on a generic neural network model with dropout
+            # model = NN(inputs=N_INPUTS,
+            #            hidden_size=[node for _ in range(layer)],
+            #            act_funcs=[tf.nn.relu for _ in range(layer)],
+            #            batch_size=BATCH_SIZE,
+            #            learning_rate=lr,
+            #            test_samples=test_samples,
+            #            dropout=True,
+            #            batch_norm=False)
+            #
+            # fd = 'nn_d/{}l_{}n_{}lr/{}'.format(layer, node, lr, i)
+            # losses = train_model(model, train_samples, fd)
+            # loss_data[fd].append(losses)
 
             # training on a generic neural network model with batch norm
-            model = NN(inputs=N_INPUTS,    # get training and testing datasets
-
-                       hidden_size=[n for _ in range(l)],
-                       act_funcs=tf.nn.relu,
+            model = NN(inputs=N_INPUTS,
+                       hidden_size=[node for _ in range(layer)],
+                       act_funcs=[tf.nn.leaky_relu for _ in range(layer)],
+                       batch_size=BATCH_SIZE,
+                       learning_rate=lr,
+                       test_samples=test_samples,
                        dropout=False,
                        batch_norm=True)
 
-            fd = 'nn_bn/{}_{}_{}'.format(layer, node, lr, i)
-            losses = train_model(model, dataset, fd)
+            fd = 'nn_bn/{}l_{}n_{}lr/{}'.format(layer, node, lr, i)
+            losses = train_model(model, train_samples, fd)
             loss_data[fd].append(losses)
 
         # save the losses to csv
